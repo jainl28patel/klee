@@ -312,6 +312,12 @@ namespace {
           cl::cat(FunctionalVerificationCat));
 
   cl::opt<bool>
+  MapCorrelation("map-correlation",
+          cl::init(false),
+          cl::desc("Generate file with correlations between maps"),
+          cl::cat(FunctionalVerificationCat));
+
+  cl::opt<bool>
   ReadWriteTwoPhase("read-write-two-phase",
           cl::init(false),
           cl::desc("Two phases of exeuction: generate read write sets, and looking up into read and write sets"),
@@ -331,6 +337,7 @@ private:
   TreeStreamWriter *m_pathWriter, *m_symPathWriter;
   std::unique_ptr<llvm::raw_ostream> m_infoFile;
   std::unique_ptr<llvm::raw_ostream> m_readWriteFile;
+  std::unique_ptr<llvm::raw_ostream> m_mapCorrelationFile;
   std::unique_ptr<llvm::raw_ostream> m_readWriteOverlapFile;
 
   SmallString<128> m_outputDirectory;
@@ -341,6 +348,7 @@ private:
   unsigned m_pathsExplored; // number of partially explored and completed paths
   std::set<std::string> m_readSet; // write set
   std::set<std::string> m_writeSet; // read set
+  std::set<std::string> m_mapCorrelation; // Correlations between maps
   std::set<std::string> m_readWriteOverlap;
 
   // used for writing .ktest files
@@ -353,6 +361,7 @@ public:
 
   llvm::raw_ostream &getInfoStream() const { return *m_infoFile; }
   llvm::raw_ostream &getReadWriteStream() const { return *m_readWriteFile; }
+  llvm::raw_ostream &getMapCorrelationStream() const { return *m_mapCorrelationFile; }
   llvm::raw_ostream &getReadWriteOverlapStream() const { return *m_readWriteOverlapFile; }
   /// Returns the number of test cases successfully generated so far
   unsigned getNumTestCases() { return m_numGeneratedTests; }
@@ -360,6 +369,7 @@ public:
   unsigned getNumPathsExplored() { return m_pathsExplored; }
   std::set<std::string> getReadSet() { return m_readSet; }
   std::set<std::string> getWriteSet() { return m_writeSet; }
+  std::set<std::string> getCorrelatedMaps() { return m_mapCorrelation; }
   std::set<std::string> getReadWriteOverlap() { return m_readWriteOverlap; }
   void incPathsCompleted() { ++m_pathsCompleted; }
   void incPathsExplored(std::uint32_t num = 1) {
@@ -368,6 +378,8 @@ public:
     m_readSet.merge(newSet); }
   void addToWriteSet(std::set<std::string> newSet) {
     m_writeSet.merge(newSet); }
+  void addToMapCorrelation(std::set<std::string> newInfo) {
+    m_mapCorrelation.merge(newInfo); }
   void addToReadWriteOverlap(std::set<std::string> newSet) {
     m_readWriteOverlap.merge(newSet); }
 
@@ -470,6 +482,11 @@ KleeHandler::KleeHandler(int argc, char **argv)
   // open read-write file
   if (ReadSet || WriteSet) {
     m_readWriteFile = openOutputFile("readWriteInformation");
+  }
+
+  // open map correlation file
+  if (MapCorrelation) {
+    m_mapCorrelationFile = openOutputFile("mapCorrelation");
   }
 
   if (ReadWriteTwoPhase) {
@@ -1670,6 +1687,14 @@ int main(int argc, char **argv, char **envp) {
       handler->getReadWriteStream() << "} \n";
     }
 
+    if (MapCorrelation) {
+      handler->getMapCorrelationStream() << "Map Correlations \n";
+      std::set<std::string> correlatedMaps = handler->getCorrelatedMaps();
+      
+      for (auto const& correlation : correlatedMaps) {
+        handler->getMapCorrelationStream() << correlation << "\n";
+      }
+    }
     if (ReadWriteTwoPhase) {
       readWriteInfo << "Read and Write Set overlap \n{ \n";
 

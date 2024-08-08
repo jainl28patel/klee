@@ -166,6 +166,17 @@ struct MapInfo {
   MapType mapType;
 };
 
+struct CallInfo {
+  unsigned int sourceLine;
+  unsigned int sourceColumn;
+  std::string sourceFile;
+  std::string functionName;
+  std::string mapName;
+  std::string key;
+  std::string value;
+  std::unordered_set<const llvm::Value*> references;
+};
+
 /// @brief ExecutionState representing a path under exploration
 class ExecutionState {
 #ifdef KLEE_UNITTEST
@@ -297,12 +308,24 @@ public:
   /// @brief Set of values which are part of the references to the arguments of a function
   std::unordered_set<llvm::Value*> argContents;
 
+  /// @brief Mapping from lookup call to string representation of map name with key value
+  std::unordered_map<llvm::Value*, std::string> mapLookupString;
+
+  /// @brief Set of values which are references to a location returned by a lookup
+  std::unordered_map<llvm::Value*, std::unordered_set<const llvm::Value*>> mapLookupReturns;
+
+  /// @brief Mapping from map helper function call to information on that call
+  std::unordered_map<llvm::Value*, CallInfo> callInformation;
+  
   /// @brief Map from the memory object ID of that map to the name of the map and size of the key
   std::unordered_map<unsigned int, MapInfo> mapMemoryObjects;
 
   /// @brief Mapping from calls to map helper functions to a string representation and call key
   std::unordered_map<llvm::Value*, std::pair<std::string, std::string>> mapCallStrings;
   std::unordered_map<llvm::Value*, ref<Expr>> mapCallArgumentExpressions;
+
+  /// @brief Set of map pairs where there is a correlation from the left map to the right map
+  std::set<std::pair<std::pair<llvm::Value*, llvm::Value*>, std::string>> correlatedMaps;
 
   unsigned int xdpMoId = 0;
 
@@ -355,9 +378,26 @@ public:
   void setXDPMemoryObjectID(unsigned int id);
   unsigned int getXDPMemoryObjectID();
 
+  bool isReferencetoMapReturn(llvm::Value *val);
+  void createNewMapReturn(llvm::Value *val, const InstructionInfo *kiInfo, 
+    std::string functionName, std::string mapName, std::string keyVal, std::string value);
+  // If op is in any of the sets of values that reference a return value of a map helper
+  // function call, add val into those sets
+  bool addIfReferencetoMapReturn(llvm::Value *op, llvm::Value *val);
+
+  bool addIfMapLookupRef(llvm::Value *op, llvm::Value *val);
+  void addNewMapLookup(llvm::Value *val, std::string repr);
+  std::pair<bool, std::string> isMapLookupReturn(llvm::Value *val);
+
   void addMapString(llvm::Value *val, std::string fName, std::string mapName, std::string key, const InstructionInfo *info, ref<Expr> keyExpr);
   std::string getMapCallKey(llvm::Value *val);
   ref<Expr> getMapCallExpr(llvm::Value *val);
+
+  std::vector<llvm::Value*> findOriginalMapCall(llvm::Value *val);
+
+  void addMapCorrelation(llvm::Value *sourceCall, llvm::Value *destCall, std::string arg);
+  std::set<std::string> formatMapCorrelations();
+  void printReferencesToMapReturnKeys();
 
   void addMapMemoryObjects(unsigned int id, std::string allocateFunctionName);
 

@@ -1823,6 +1823,33 @@ void Executor::executeCall(ExecutionState &state, KInstruction *ki, Function *f,
 
       state.nextMapKey = keyName;
       state.addMapString(i, fName, name, keyName, ki->info, lookupKey);
+      if (fName == "bpf_map_update_elem") {
+        // For update also need to read the value
+        unsigned valSize = getMapArgSize(i->getOperand(2));
+        ConstantExpr *valueCe = cast<ConstantExpr>(arguments[2]);
+        ObjectPair valueOp;
+        bool valueSuccess;
+        state.addressSpace.resolveOne(state, solver.get(), valueCe, valueOp, valueSuccess);
+        const MemoryObject *valueMo = valueOp.first;
+        const ObjectState *valueOs = valueOp.second;
+        assert(valueOs && "Error: Resolving not able to find object not handled. Check if function arguments were initialised");
+        ref<Expr> offsetToValue = valueMo->getOffsetExpr(valueCe);
+        std::string valName = getMapKeyString(offsetToValue, valSize, valueOs);
+        state.createNewMapReturn(callB, ki->info, fName, name, keyName, valName);
+        // If there is a dependency
+        for (auto &sourceCall : state.findOriginalMapCall(callB->getOperand(1))) {
+          state.addMapCorrelation(sourceCall, callB, "key");
+        }
+        for (auto &sourceCall : state.findOriginalMapCall(callB->getOperand(2))) {
+          state.addMapCorrelation(sourceCall, callB, "value");
+        }
+      } else {
+        state.createNewMapReturn(callB, ki->info, fName, name, keyName, "");
+        // If there is a dependency
+        for (auto &sourceCall : state.findOriginalMapCall(callB->getOperand(1))) {
+          state.addMapCorrelation(sourceCall, callB, "");
+        }
+      }
     }
   }
 
@@ -2701,6 +2728,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> left = eval(ki, 0, state).value;
     ref<Expr> right = eval(ki, 1, state).value;
     bindLocal(ki, state, AddExpr::create(left, right));
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
+
     break;
   }
 
@@ -2708,6 +2740,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> left = eval(ki, 0, state).value;
     ref<Expr> right = eval(ki, 1, state).value;
     bindLocal(ki, state, SubExpr::create(left, right));
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
+
     break;
   }
  
@@ -2715,6 +2752,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> left = eval(ki, 0, state).value;
     ref<Expr> right = eval(ki, 1, state).value;
     bindLocal(ki, state, MulExpr::create(left, right));
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
+    
     break;
   }
 
@@ -2723,6 +2765,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = UDivExpr::create(left, right);
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
+
     break;
   }
 
@@ -2731,6 +2778,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = SDivExpr::create(left, right);
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
+
     break;
   }
 
@@ -2739,6 +2791,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = URemExpr::create(left, right);
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
+
     break;
   }
 
@@ -2747,6 +2804,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = SRemExpr::create(left, right);
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
+
     break;
   }
 
@@ -2755,6 +2817,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = AndExpr::create(left, right);
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
+
     break;
   }
 
@@ -2763,6 +2830,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = OrExpr::create(left, right);
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
+
     break;
   }
 
@@ -2771,6 +2843,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = XorExpr::create(left, right);
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
+
     break;
   }
 
@@ -2779,6 +2856,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = ShlExpr::create(left, right);
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
+
     break;
   }
 
@@ -2787,6 +2869,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = LShrExpr::create(left, right);
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
+
     break;
   }
 
@@ -2795,6 +2882,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = AShrExpr::create(left, right);
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
+
     break;
   }
 
@@ -2803,6 +2895,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
   case Instruction::ICmp: {
     CmpInst *ci = cast<CmpInst>(i);
     ICmpInst *ii = cast<ICmpInst>(ci);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfReferencetoMapReturn(i->getOperand(1), i);
+    }
 
     switch(ii->getPredicate()) {
     case ICmpInst::ICMP_EQ: {
@@ -2922,6 +3018,9 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     KGEPInstruction *kgepi = static_cast<KGEPInstruction*>(ki);
     ref<Expr> base = eval(ki, 0, state).value;
     ref<Expr> original_base = base;
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+    }
 
     for (std::vector< std::pair<unsigned, uint64_t> >::iterator 
            it = kgepi->indices.begin(), ie = kgepi->indices.end(); 
@@ -2986,6 +3085,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
                                            0,
                                            getWidthForLLVMType(ci->getType()));
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+    }
+
     break;
   }
   case Instruction::ZExt: {
@@ -2993,6 +3096,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> result = ZExtExpr::create(eval(ki, 0, state).value,
                                         getWidthForLLVMType(ci->getType()));
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+    }
+
     break;
   }
   case Instruction::SExt: {
@@ -3000,6 +3107,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> result = SExtExpr::create(eval(ki, 0, state).value,
                                         getWidthForLLVMType(ci->getType()));
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+    }
+
     break;
   }
 
@@ -3008,6 +3119,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     Expr::Width pType = getWidthForLLVMType(ci->getType());
     ref<Expr> arg = eval(ki, 0, state).value;
     bindLocal(ki, state, ZExtExpr::create(arg, pType));
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+    }
+
     break;
   }
   case Instruction::PtrToInt: {
@@ -3015,12 +3130,20 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     Expr::Width iType = getWidthForLLVMType(ci->getType());
     ref<Expr> arg = eval(ki, 0, state).value;
     bindLocal(ki, state, ZExtExpr::create(arg, iType));
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+    }
+
     break;
   }
 
   case Instruction::BitCast: {
     ref<Expr> result = eval(ki, 0, state).value;
     bindLocal(ki, state, result);
+    if (verification) {
+      state.addIfReferencetoMapReturn(i->getOperand(0), i);
+      state.addIfMapLookupRef(i->getOperand(0), i);
+    }
     break;
   }
 
@@ -3886,6 +4009,7 @@ void Executor::terminateState(ExecutionState &state,
   if (verification) {
     interpreterHandler->addToReadSet(state.getReadSet());
     interpreterHandler->addToWriteSet(state.getWriteSet());
+    interpreterHandler->addToMapCorrelation(state.formatMapCorrelations());
     interpreterHandler->addToReadWriteOverlap(state.overlap);
   }
   executionTree->setTerminationType(state, reason);
@@ -4967,6 +5091,14 @@ void Executor::executeMemoryOperation(ExecutionState &state,
               handleMapStore(state, i, op, offset);        
               handlePacketDataStore(state, i, mo, offset, bytes);
               
+                state.addIfReferencetoMapReturn(firstOperand, secondOperand);
+
+              std::pair<bool, std::string> mapLookupRet = state.isMapLookupReturn(secondOperand);
+              if (mapLookupRet.first) {
+                // state.addWrite(mapLookupRet.second);
+              } else {
+                state.addIfMapLookupRef(firstOperand, secondOperand);
+              }
             }
 
             ObjectState *wos = state.addressSpace.getWriteable(mo, os);
@@ -4982,6 +5114,8 @@ void Executor::executeMemoryOperation(ExecutionState &state,
             llvm::LoadInst *i = cast<llvm::LoadInst>(state.prevPC->inst);
             handlePacketDataLoad(state, i, mo, offset, bytes);
             handleArrayMapLoad(state, i, result);
+            state.addIfMapLookupRef(i->getOperand(0), i);
+            state.addIfReferencetoMapReturn(i->getOperand(0), i);
           }
           bindLocal(target, state, result);
         }

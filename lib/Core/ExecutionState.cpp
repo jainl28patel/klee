@@ -128,9 +128,13 @@ ExecutionState::ExecutionState(const ExecutionState& state):
     allReads(state.allReads),
     allWrites(state.allWrites),
     argContents(state.argContents),
+    mapLookupString(state.mapLookupString),
+    mapLookupReturns(state.mapLookupReturns),
+    callInformation(state.callInformation),
     mapMemoryObjects(state.mapMemoryObjects),
     mapCallStrings(state.mapCallStrings),
     mapCallArgumentExpressions(state.mapCallArgumentExpressions),
+    correlatedMaps(state.correlatedMaps),
     xdpMoId(state.xdpMoId),
     nextMapName(state.nextMapName),
     nextMapKey(state.nextMapKey),
@@ -311,6 +315,41 @@ unsigned int ExecutionState::getXDPMemoryObjectID() {
   return xdpMoId;
 }
 
+bool ExecutionState::isReferencetoMapReturn(llvm::Value *val) {
+  for (const auto &c : callInformation) {
+    if (c.second.references.find(val) != c.second.references.end()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::vector<llvm::Value*> ExecutionState::findOriginalMapCall(llvm::Value *val) {
+  std::vector<llvm::Value*> mapReturns;
+  for (const auto &c : callInformation) {
+    if (c.second.references.find(val) != c.second.references.end()) {
+      mapReturns.push_back(c.first);
+    }
+  }
+  return mapReturns;
+}
+
+void ExecutionState::createNewMapReturn(llvm::Value *val, const InstructionInfo *kiInfo, 
+    std::string functionName, std::string mapName, std::string keyVal, std::string value) {
+  std::unordered_set<const llvm::Value*> newSet;
+  CallInfo info;
+  newSet.insert(val);
+  info.references = newSet;
+  info.sourceLine = kiInfo->line;
+  info.sourceColumn = kiInfo->column;
+  info.sourceFile = kiInfo->file;
+  info.functionName = functionName;
+  info.key = keyVal;
+  info.value = value;
+  info.mapName = mapName;
+  callInformation.insert(std::make_pair(val, info));
+}
+
 void ExecutionState::addMapString(llvm::Value *val, std::string fName, std::string mapName, std::string key, 
                                   const InstructionInfo *info, ref<Expr> keyExpr) {
   std::string mapStr = fName + " on map " + mapName + " on line: " + std::to_string(info->line) + ", column: " + std::to_string(info->column);
@@ -330,6 +369,89 @@ std::string ExecutionState::getMapCallKey(llvm::Value *val) {
     return key->second.second;
   }
   return "";
+}
+
+void ExecutionState::printReferencesToMapReturnKeys() {
+  llvm::errs() << "References to map return keys: {";
+  for (auto &c : callInformation) {
+    c.first->dump();
+  }
+  llvm::errs() << "}\n";
+}
+
+bool ExecutionState::addIfReferencetoMapReturn(llvm::Value *op, llvm::Value *val) {
+  bool added = false;
+  for (auto &c : callInformation) {
+    if (c.second.references.find(op) != c.second.references.end() || op == c.first) {
+      c.second.references.insert(val);
+      added = true;
+    }
+  }
+  return added;
+}
+
+// add a map correlation between source map and head map
+void ExecutionState::addMapCorrelation(llvm::Value *sourceCall, llvm::Value *destCall, std::string arg) {
+  correlatedMaps.insert(std::make_pair(std::make_pair(sourceCall, destCall), arg));
+}
+
+std::set<std::string> ExecutionState::formatMapCorrelations() {
+  std::set<std::string> mapInfo;
+
+  for (auto &c : correlatedMaps) {
+    llvm::Value *sourceCall = c.first.first;
+    llvm::Value *destCall = c.first.second;
+    CallInfo sourceInfo = callInformation.find(sourceCall)->second;
+    CallInfo destInfo = callInformation.find(destCall)->second;
+    std::stringstream newInfo;
+    newInfo << sourceInfo.sourceFile 
+            << "(" << std::to_string(sourceInfo.sourceLine)
+            << "," << std::to_string(sourceInfo.sourceColumn) << "):" 
+            << sourceInfo.functionName << "(" 
+            << sourceInfo.mapName << "," 
+            << sourceInfo.key << ")->" 
+            << destInfo.sourceFile 
+            << "(" << std::to_string(destInfo.sourceLine) 
+            << "," << std::to_string(destInfo.sourceColumn) << "):"
+            << destInfo.functionName << "(" << destInfo.mapName << ",";
+    if (c.second == "key") {
+      newInfo << "correlation:" << destInfo.key << "," << destInfo.value << ")";
+    } else if (c.second == "value") {
+      newInfo << destInfo.key << "," << "correlation:" << destInfo.value << ")";
+    } else {
+        newInfo << destInfo.key << ")";
+    }
+    mapInfo.insert(newInfo.str());
+  }
+
+  return mapInfo;
+}
+
+void ExecutionState::addNewMapLookup(llvm::Value *val, std::string repr) {
+  mapLookupString.insert(std::make_pair(val, repr));  
+  std::unordered_set<const llvm::Value*> newSet;
+  newSet.insert(val);
+  mapLookupReturns.insert(std::make_pair(val, newSet));
+}
+
+bool ExecutionState::addIfMapLookupRef(llvm::Value *op, llvm::Value *val) {
+  bool added = false;
+  for (auto &c : mapLookupReturns) {
+    if (c.second.find(op) != c.second.end() || op == c.first) {
+      c.second.insert(val);
+      added = true;
+    }
+  }
+  return added;
+}
+
+std::pair<bool, std::string> ExecutionState::isMapLookupReturn(llvm::Value *val) {
+  for (const auto &c : mapLookupReturns) {
+    if (c.second.find(val) != c.second.end()) {
+      return std::make_pair(true, mapLookupString[c.first]);
+    }
+  }
+  return std::make_pair(false, "");
 }
 
 void ExecutionState::addMapMemoryObjects(unsigned int id, std::string allocateFunctionName) {
