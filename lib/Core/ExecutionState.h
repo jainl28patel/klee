@@ -166,6 +166,20 @@ struct MapInfo {
   MapType mapType;
 };
 
+struct BranchInfo {
+  llvm::Value* branch;
+  unsigned int sourceLine;
+  unsigned int sourceColumn;
+  std::string sourceFile;
+  ref<Expr> cond;
+
+  bool operator<(const BranchInfo& y) const {
+    return std::tie(sourceLine, sourceColumn) < std::tie(y.sourceLine, y.sourceColumn);
+  }
+};
+
+// bool operator<(const BranchInfo& x, const BranchInfo& y);
+
 struct CallInfo {
   unsigned int sourceLine;
   unsigned int sourceColumn;
@@ -324,6 +338,9 @@ public:
   std::unordered_map<llvm::Value*, std::pair<std::string, std::string>> mapCallStrings;
   std::unordered_map<llvm::Value*, ref<Expr>> mapCallArgumentExpressions;
 
+  /// @brief Set of calls to map helper functions which result in a branch
+  std::set<BranchInfo> branchesOnMapReturnReference;
+
   /// @brief Set of map pairs where there is a correlation from the left map to the right map
   std::set<std::pair<std::pair<llvm::Value*, llvm::Value*>, std::string>> correlatedMaps;
 
@@ -384,6 +401,7 @@ public:
   // If op is in any of the sets of values that reference a return value of a map helper
   // function call, add val into those sets
   bool addIfReferencetoMapReturn(llvm::Value *op, llvm::Value *val);
+  void removeMapReference(llvm::Value *val);
 
   bool addIfMapLookupRef(llvm::Value *op, llvm::Value *val);
   void addNewMapLookup(llvm::Value *val, std::string repr);
@@ -393,6 +411,8 @@ public:
   std::string getMapCallKey(llvm::Value *val);
   ref<Expr> getMapCallExpr(llvm::Value *val);
 
+  void addBranchOnMapReturn(llvm::Value *val, const InstructionInfo *info, ref<Expr> cond);
+  std::string formatBranchMaps();
   std::vector<llvm::Value*> findOriginalMapCall(llvm::Value *val);
 
   void addMapCorrelation(llvm::Value *sourceCall, llvm::Value *destCall, std::string arg);

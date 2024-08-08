@@ -2380,10 +2380,18 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       if (statsTracker && state.stack.back().kf->trackCoverage)
         statsTracker->markBranchVisited(branches.first, branches.second);
 
-      if (branches.first)
+      if (branches.first) {
+        if (verification && branches.first->addIfReferencetoMapReturn(bi->getOperand(0), bi)) {
+          branches.first->addBranchOnMapReturn(bi, ki->info, cond);
+        }
         transferToBasicBlock(bi->getSuccessor(0), bi->getParent(), *branches.first);
-      if (branches.second)
+      }
+      if (branches.second) {
+        if (verification && branches.second->addIfReferencetoMapReturn(bi->getOperand(0), bi)) {
+          branches.second->addBranchOnMapReturn(bi, ki->info, Expr::createIsZero(cond));
+        }
         transferToBasicBlock(bi->getSuccessor(1), bi->getParent(), *branches.second);
+      }
     }
     break;
   }
@@ -4175,6 +4183,19 @@ void Executor::terminateStateOnError(ExecutionState &state,
     if (!info_str.empty())
       msg << "Info: \n" << info_str;
 
+    if (verification) {
+      std::string mapInfo  = state.formatBranchMaps();
+      if (!mapInfo.empty()) {
+        msg << "These branches on map values lead to this error: \n" << mapInfo;
+        msg << "Please make sure the maps are configured correctly. \n";
+      } else {
+        msg << "No map info\n";
+      }
+      std::string result;
+      getConstraintLog(state, result, KQUERY);
+      msg << "\nConstraints that lead to this error: \n" << result << "\n";
+    }
+
     const std::string ext = terminationTypeFileExtension(terminationType);
     // use user provided suffix from klee_report_error()
     const char * file_suffix = suffix ? suffix : ext.c_str();
@@ -5091,7 +5112,17 @@ void Executor::executeMemoryOperation(ExecutionState &state,
               handleMapStore(state, i, op, offset);        
               handlePacketDataStore(state, i, mo, offset, bytes);
               
+              if (state.isReferencetoMapReturn(secondOperand) && !state.isReferencetoMapReturn(firstOperand)) {
+                state.removeMapReference(secondOperand);
+                if (LoadInst *loadInst = dyn_cast<LoadInst>(secondOperand)) {
+                  if (loadInst->getPointerOperandType()->isPointerTy()
+                      && loadInst->getPointerOperandType()->getPointerElementType()->isPointerTy()) {
+                    state.removeMapReference(loadInst->getOperand(0));
+                  }
+                }
+              } else {
                 state.addIfReferencetoMapReturn(firstOperand, secondOperand);
+              }
 
               std::pair<bool, std::string> mapLookupRet = state.isMapLookupReturn(secondOperand);
               if (mapLookupRet.first) {

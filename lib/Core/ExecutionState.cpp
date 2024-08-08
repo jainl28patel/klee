@@ -134,6 +134,7 @@ ExecutionState::ExecutionState(const ExecutionState& state):
     mapMemoryObjects(state.mapMemoryObjects),
     mapCallStrings(state.mapCallStrings),
     mapCallArgumentExpressions(state.mapCallArgumentExpressions),
+    branchesOnMapReturnReference(state.branchesOnMapReturnReference),
     correlatedMaps(state.correlatedMaps),
     xdpMoId(state.xdpMoId),
     nextMapName(state.nextMapName),
@@ -390,6 +391,12 @@ bool ExecutionState::addIfReferencetoMapReturn(llvm::Value *op, llvm::Value *val
   return added;
 }
 
+void ExecutionState::removeMapReference(llvm::Value *val) {
+  for (auto &c : callInformation) {
+    c.second.references.erase(val);
+  }
+}
+
 // add a map correlation between source map and head map
 void ExecutionState::addMapCorrelation(llvm::Value *sourceCall, llvm::Value *destCall, std::string arg) {
   correlatedMaps.insert(std::make_pair(std::make_pair(sourceCall, destCall), arg));
@@ -454,6 +461,17 @@ std::pair<bool, std::string> ExecutionState::isMapLookupReturn(llvm::Value *val)
   return std::make_pair(false, "");
 }
 
+void ExecutionState::addBranchOnMapReturn(llvm::Value *val, const InstructionInfo *info, ref<Expr> cond) {
+  BranchInfo branchInfo;
+  branchInfo.sourceLine = info->line;
+  branchInfo.sourceColumn = info->column;
+  branchInfo.sourceFile = info->file;
+  branchInfo.cond = cond;
+  branchInfo.branch = val;
+  
+  branchesOnMapReturnReference.insert(branchInfo);
+}
+
 void ExecutionState::addMapMemoryObjects(unsigned int id, std::string allocateFunctionName) {
   MapInfo mapInfo;
   mapInfo.mapName = nextMapName;
@@ -495,6 +513,43 @@ void ExecutionState::printMapMemoryObjects() {
       }
   }
   llvm::errs() << "}\n";
+}
+
+std::string ExecutionState::formatBranchMaps() {
+  std::stringstream mapStr;
+
+  for (auto &branch : branchesOnMapReturnReference) {
+    for (auto &c: findOriginalMapCall(branch.branch)) {
+      auto it = callInformation.find(c);
+      if (it != callInformation.end()) {
+        mapStr << " - Branch on "
+               << branch.sourceFile
+               << "(line:" << branch.sourceLine 
+               << ", col:" << branch.sourceColumn 
+               << ") used return value from "
+               << it->second.functionName
+               << "(" << it->second.mapName
+               << ") on "
+               << it->second.sourceFile
+               << "(line:" << it->second.sourceLine 
+               << ", col:" << it->second.sourceColumn 
+               << ")";
+        
+        if (!branch.cond->isFalse() && !branch.cond->isTrue()) {
+          mapStr << "\n   - Constraint that lead to this branch: {";
+          mapStr << branch.cond;
+          mapStr << "}";
+        } else {
+          mapStr << "\n   - Constraint on this branch not symbolic";
+        }
+        mapStr << "\n";
+      } else {
+        assert(0 && "Call to map helper function not found");
+      }
+    }
+  }
+
+  return mapStr.str();
 }
 
 void ExecutionState::pushFrame(KInstIterator caller, KFunction *kf) {
