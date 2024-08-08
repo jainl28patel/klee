@@ -22,11 +22,14 @@
 #include "llvm/IR/Function.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/Instructions.h"
 
 #include <cassert>
 #include <iomanip>
 #include <map>
 #include <set>
+#include <string>
+#include <regex>
 #include <sstream>
 #include <stdarg.h>
 
@@ -34,10 +37,10 @@ using namespace llvm;
 using namespace klee;
 
 namespace {
-cl::opt<bool> DebugLogStateMerge(
-    "debug-log-state-merge", cl::init(false),
-    cl::desc("Debug information for underlying state merging (default=false)"),
-    cl::cat(MergeCat));
+  cl::opt<bool> DebugLogStateMerge(
+      "debug-log-state-merge", cl::init(false),
+      cl::desc("Debug information for underlying state merging (default=false)"),
+      cl::cat(MergeCat));
   
 }
 namespace klee {
@@ -117,7 +120,26 @@ ExecutionState::ExecutionState(const ExecutionState& state):
     coveredNew(state.coveredNew),
     forkDisabled(state.forkDisabled),
     base_addrs(state.base_addrs),
-    base_mos(state.base_mos) {
+    base_mos(state.base_mos),
+    packetRead(state.packetRead),
+    packetWrite(state.packetWrite),
+    mapRead(state.mapRead),
+    mapWrite(state.mapWrite),
+    allReads(state.allReads),
+    allWrites(state.allWrites),
+    argContents(state.argContents),
+    mapMemoryObjects(state.mapMemoryObjects),
+    mapCallStrings(state.mapCallStrings),
+    mapCallArgumentExpressions(state.mapCallArgumentExpressions),
+    xdpMoId(state.xdpMoId),
+    nextMapName(state.nextMapName),
+    nextMapKey(state.nextMapKey),
+    nextMapSize(state.nextMapSize),
+    nextKeySize(state.nextKeySize),
+    nextValueSize(state.nextValueSize),
+    mapOperationKey(state.mapOperationKey),
+    generateMode(state.generateMode),
+    overlap(state.overlap) {
   for (const auto &cur_mergehandler: openMergeStack)
     cur_mergehandler->addOpenState(this);
 }
@@ -131,6 +153,226 @@ ExecutionState *ExecutionState::branch() {
   falseState->coveredLines.clear();
 
   return falseState;
+}
+
+void ExecutionState::addPacketRead(std::string newRead) {
+  if (generateMode) {
+    packetRead.insert(newRead);
+  } else {
+    if (packetWrite.find(newRead) != packetWrite.end()) {
+      overlap.insert(newRead);
+    }
+  }
+}
+
+void ExecutionState::addMapRead(std::string mapName, ref<Expr> key, std::string keyName) {
+  auto it = mapRead.find(mapName);
+  assert(key);
+  if (it != mapRead.end()) {
+    it->second.insert(std::make_pair(key, keyName));
+  } else {
+    std::set<std::pair<ref<Expr>, std::string>> newSet;
+    newSet.insert(std::make_pair(key, keyName));
+    mapRead.insert(std::make_pair(mapName, newSet));
+  }
+}
+
+void ExecutionState::addToOverlap(std::string mapName, std::string keyValue) {
+  overlap.insert("map:" + mapName + "." + keyValue);
+}
+
+void ExecutionState::addCheckRead(std::string mapName, ref<Expr> key, std::string keyName) {
+  auto it = allReads.find(mapName);
+  assert(key);
+  if (it != allReads.end()) {
+    it->second.insert(std::make_pair(key, keyName));
+  } else {
+    std::set<std::pair<ref<Expr>, std::string>> newSet;
+    newSet.insert(std::make_pair(key, keyName));
+    allReads.insert(std::make_pair(mapName, newSet));
+  }
+}
+
+void ExecutionState::addCheckWrite(std::string mapName, ref<Expr> key, std::string keyName) {
+  auto it = allWrites.find(mapName);
+  if (it != allWrites.end()) {
+    it->second.insert(std::make_pair(key, keyName));
+  } else {
+    std::set<std::pair<ref<Expr>, std::string>> newSet;
+    newSet.insert(std::make_pair(key, keyName));
+    allWrites.insert(std::make_pair(mapName, newSet));
+  }
+}
+
+std::set<std::pair<ref<Expr>, std::string>> ExecutionState::getMapRead(std::string mapName) {
+  std::set<std::pair<ref<Expr>, std::string>> result;
+  auto it = mapRead.find(mapName);
+  if (it != mapRead.end()) {
+    result = it->second;
+  }
+  return result;
+}
+
+ref<Expr> ExecutionState::getMapReadForString(std::string mapName, std::string keyName) {
+  std::set<std::pair<ref<Expr>, std::string>> result = getMapRead(mapName);
+  for (auto &it : result) {
+    if (keyName == it.second) {
+      return it.first;
+    }
+  }
+  auto checkIt = allReads.find(mapName);
+  if (checkIt != allReads.end()) {
+    result = checkIt->second;
+    for (auto &it : result) {
+      if (keyName == it.second) {
+        return it.first;
+      }
+    }
+  }
+  llvm::errs() << "key name was " << keyName << "\n";
+  assert(0 && "Failed to find key");
+}
+
+std::set<std::pair<ref<Expr>, std::string>> ExecutionState::getMapWrite(std::string mapName) {
+  std::set<std::pair<ref<Expr>, std::string>> result;
+  auto it = mapWrite.find(mapName);
+  if (it != mapWrite.end()) {
+    result = it->second;
+  }
+  return result;
+}
+
+void ExecutionState::addPacketWrite(std::string newWrite) {
+  if (generateMode) {
+    packetWrite.insert(newWrite);
+  } else {
+    if (packetWrite.find(newWrite) != packetWrite.end() || packetRead.find(newWrite) != packetRead.end()) {
+      overlap.insert(newWrite);
+    }
+  }
+}
+
+void ExecutionState::addMapWrite(std::string mapName, ref<Expr> key, std::string keyName) {
+  auto it = mapWrite.find(mapName);
+  if (it != mapWrite.end()) {
+    it->second.insert(std::make_pair(key, keyName));
+  } else {
+    std::set<std::pair<ref<Expr>, std::string>> newSet;
+    newSet.insert(std::make_pair(key, keyName));
+    mapWrite.insert(std::make_pair(mapName, newSet));
+  }
+}
+
+std::set<std::string> ExecutionState::getReadSet() {
+  std::set<std::string> readSet;
+  std::string mr;
+  for (auto &it : mapRead) {
+    for (auto &setIt : it.second) {
+      mr = "map:" + it.first + "." + setIt.second;
+      readSet.insert(mr);
+    }
+  }
+
+  readSet.merge(packetRead);
+  return readSet;
+}
+
+std::set<std::string> ExecutionState::getWriteSet() {
+  std::set<std::string> writeSet;
+  std::string mw;
+  for (auto &it : mapWrite) {
+    for (auto &setIt : it.second) {
+      mw = "map:" + it.first + "." + setIt.second;
+      writeSet.insert(mw);
+    }
+  }
+
+  writeSet.merge(packetWrite);
+  return writeSet;
+}
+
+bool ExecutionState::isFunctionForAnalysis(llvm::Function *func) {
+  std::vector<std::string> removedFunctions = {"__uClibc_main", "__uClibc_init", "__uClibc_fini", "__user_main",
+    "exit", "map_allocate", "map_lookup_elem", "map_update_elem", "map_delete_elem", 
+    "map_of_map_allocate", "map_of_map_lookup_elem", "bpf_map_init_stub", "bpf_xdp_adjust_head",
+    "bpf_map_lookup_elem", "bpf_map_reset_stub", "array_allocate", "bpf_map_update_elem",
+    "array_update_elem", "bpf_redirect_map", "map_update_elem", "array_lookup_elem", ""};
+  std::string funcName = func->getName().str();
+
+  // not present in the removed functions
+  return std::find(removedFunctions.begin(), removedFunctions.end(), funcName) == removedFunctions.end();
+}
+
+void ExecutionState::setXDPMemoryObjectID(unsigned int id) {
+  xdpMoId = id;
+}
+
+unsigned int ExecutionState::getXDPMemoryObjectID() {
+  return xdpMoId;
+}
+
+void ExecutionState::addMapString(llvm::Value *val, std::string fName, std::string mapName, std::string key, 
+                                  const InstructionInfo *info, ref<Expr> keyExpr) {
+  std::string mapStr = fName + " on map " + mapName + " on line: " + std::to_string(info->line) + ", column: " + std::to_string(info->column);
+  mapCallStrings.insert(std::make_pair(val, std::make_pair(mapStr, key)));
+  mapCallArgumentExpressions.insert(std::make_pair(val, keyExpr));
+}
+
+ref<Expr> ExecutionState::getMapCallExpr(llvm::Value *val) {
+  auto key = mapCallArgumentExpressions.find(val);
+  assert(key != mapCallArgumentExpressions.end());
+  return key->second;
+}
+
+std::string ExecutionState::getMapCallKey(llvm::Value *val) {
+  auto key = mapCallStrings.find(val);
+  if (key != mapCallStrings.end()) {
+    return key->second.second;
+  }
+  return "";
+}
+
+void ExecutionState::addMapMemoryObjects(unsigned int id, std::string allocateFunctionName) {
+  MapInfo mapInfo;
+  mapInfo.mapName = nextMapName;
+  if (allocateFunctionName == "array_allocate") {
+    mapInfo.mapType = MapType::Array;
+    mapInfo.valueSize = nextValueSize;
+  } else if (allocateFunctionName == "map_allocate") {
+    mapInfo.mapType = MapType::Map;
+    mapInfo.keySize = nextKeySize;
+    mapInfo.valueSize = nextValueSize;
+  } else if (allocateFunctionName == "map_of_map_allocate") {
+    mapInfo.mapType = MapType::MapOfMap;
+  }
+  mapMemoryObjects.insert(std::make_pair(id, mapInfo));
+}
+
+MapInfo ExecutionState::getMapInfo(unsigned int id) {
+  auto pos = mapMemoryObjects.find(id);
+  return pos->second;
+}
+
+bool ExecutionState::isMapMemoryObject(unsigned int id) {
+  return mapMemoryObjects.find(id) != mapMemoryObjects.end();
+}
+
+void ExecutionState::printMapMemoryObjects() {
+  llvm::errs() << "Map Memory Objects: {\n";
+  for (auto &c : mapMemoryObjects) {
+    llvm::errs() << "id: " << std::to_string(c.first) 
+      << ", name: " << c.second.mapName 
+      << ", key size: " << std::to_string(c.second.keySize) 
+      << ", value size: " << std::to_string(c.second.valueSize);
+      if (c.second.mapType == MapType::Array) {
+        llvm::errs() << ", mapType: Array \n";
+      } else if (c.second.mapType == MapType::Map) {
+        llvm::errs() << ", mapType: Map \n";
+      } else if (c.second.mapType == MapType::MapOfMap) {
+        llvm::errs() << ", mapType: MapOfMap \n";
+      }
+  }
+  llvm::errs() << "}\n";
 }
 
 void ExecutionState::pushFrame(KInstIterator caller, KFunction *kf) {

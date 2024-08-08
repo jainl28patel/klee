@@ -79,6 +79,8 @@
 #include "llvm/Support/Process.h"
 #include "llvm/Support/TypeSize.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/DebugLoc.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 
 #include <algorithm>
 #include <cassert>
@@ -485,7 +487,7 @@ Executor::Executor(LLVMContext &ctx, const InterpreterOptions &opts,
       pathWriter(0), symPathWriter(0), specialFunctionHandler(0), timers{time::Span(TimerInterval)},
       replayKTest(0), replayPath(0), usingSeeds(0),
       atMemoryLimit(false), inhibitForking(false), haltExecution(false),
-      ivcEnabled(false), debugLogBuffer(debugBufferString) {
+      ivcEnabled(false), verification(opts.Verification), debugLogBuffer(debugBufferString) {
 
 
   const time::Span maxTime{MaxTime};
@@ -1708,6 +1710,122 @@ ref<klee::ConstantExpr> Executor::getEhTypeidFor(ref<Expr> type_info) {
 
 void Executor::executeCall(ExecutionState &state, KInstruction *ki, Function *f,
                            std::vector<ref<Expr>> &arguments) {
+  if (verification) {
+    std::string fName = f->getName().str();
+    if (fName == "__separate") {
+      // switch to check phase
+      state.generateMode = false;
+    }
+    if (fName == "bpf_map_lookup_elem" || fName == "bpf_map_update_elem" 
+        || fName == "bpf_map_delete_elem" || fName == "bpf_redirect_map") {
+      // function we analyse - get the map name and key
+      std::string keyName = "unk_key";
+      std::string mapName = "unk_map";
+      std::string name = "";
+      unsigned keySize = 32;
+      Instruction *i = ki->inst;
+      llvm::CallBase *callB = cast<llvm::CallBase>(i);
+
+      // Get name of map
+      if (auto const *bitcastMap = dyn_cast<llvm::BitCastOperator>(i->getOperand(0))) {
+        name = bitcastMap->getOperand(0)->getName().str();
+        mapName = "map:" + name;
+      } else if (auto const *loadInst = dyn_cast<llvm::LoadInst>(i->getOperand(0))) {
+        name = formatMapName(loadInst->getOperand(0)->getName().str());
+        mapName = "map:" + name;
+      } else {
+        i->dump();
+        assert(0 && "Error: No implementation for if no bitcast");
+      }
+
+      // Get the size of key
+      if (auto const *bitcastKey = dyn_cast<llvm::BitCastInst>(i->getOperand(1))) {
+        llvm::Type *t = bitcastKey->getSrcTy()->getPointerElementType();
+        if (t->isSized()) {
+          keySize = getWidthForLLVMType(t);
+        } else if (t->isStructTy()) {
+          llvm::StructType *st = cast<llvm::StructType>(bitcastKey->getSrcTy()->getPointerElementType());
+          keySize = kmodule->targetData->getStructLayout(st)->getSizeInBits();
+        } else {
+          assert(0 && "Error: case for argument of this type not implemented yet.");
+        }
+      }
+
+      ref<Expr> lookupKey = arguments[1];
+
+      // Get value of key
+      if (isa<ConstantExpr>(lookupKey) && fName != "bpf_redirect_map") {
+        // for these functions, the key is a pointer to a value
+        // so we need to get the value stored in the pointer
+        ConstantExpr *ce = cast<ConstantExpr>(lookupKey);
+        ObjectPair op;
+        bool success;
+        state.addressSpace.resolveOne(state, solver.get(), ce, op, success);
+        const MemoryObject *mo = op.first;
+        const ObjectState *osarg = op.second;
+        assert(osarg && "Error: Resolving not able to find object not handled. Check if function arguments were initialised");
+        // read the pointer
+        ref<ConstantExpr> offsetToArg = cast<ConstantExpr>(mo->getOffsetExpr(ce));
+        unsigned int offset = offsetToArg->getZExtValue();
+        ref<Expr> readValue = osarg->read(offsetToArg, keySize);
+        state.mapOperationKey = readValue;
+        std::string valueStr;
+
+        unsigned int keySizeInBytes = keySize / 8;
+        for (unsigned int i = 0; i < keySizeInBytes; i++) {
+          ref<Expr> val = osarg->read8(offset + i);
+          if (ConstantExpr *valCE = dyn_cast<ConstantExpr>(val)) {
+            std::string currValStr;
+            valCE->toString(currValStr, 10);
+            valueStr += ("b" + std::to_string(i) + "(" + currValStr + ")_");
+          } else {
+            valueStr += ("b" + std::to_string(i) + "(sym)_");
+          }
+        }
+        keyName = valueStr;
+      } else if (fName == "bpf_redirect_map") {
+        // For bpf_redirect_map the key is the value
+        std::string valueStr;
+        if (ConstantExpr *ce = dyn_cast<ConstantExpr>(lookupKey)) {
+          unsigned int val = ce->getZExtValue();
+          unsigned int width = ce->getWidth() / 8;
+          std::stringstream valueInHex;
+          valueInHex << std::setfill('0') 
+                    << std::setw(width * 2) 
+                    << std::hex 
+                    << val;
+          std::string valueHex = valueInHex.str();
+          std::string nextHex;
+          unsigned int x;
+          assert(valueHex.size() == (width * 2));
+          for (std::size_t i = 0; i < width; i++) {
+            std::stringstream nextBytes;
+            std::size_t index = valueHex.size() - 2 * (i + 1);
+            nextHex = valueHex.substr(index, 2);
+            nextBytes << std::hex << nextHex;
+            nextBytes >> x;
+            valueStr += ("b" + std::to_string(i) + "(" + std::to_string(x) + ")_");
+          }
+        } else {
+          for (unsigned int i = 0; i < keySize / 8; i++) {
+            valueStr += ("b" + std::to_string(i) + "(sym)_");
+          }
+        }
+        keyName = valueStr;
+        state.mapOperationKey = lookupKey;
+      } else {
+        llvm::errs() << "Not handled type ";
+        Expr::printKind(llvm::errs(), lookupKey->getKind());
+        llvm::errs() << "\n";
+        lookupKey->dump();
+        assert(0 && "Error: handling of not being able to cast to ConstantExpr not implemented");
+      }
+
+      state.nextMapKey = keyName;
+      state.addMapString(i, fName, name, keyName, ki->info, lookupKey);
+    }
+  }
+
   Instruction *i = ki->inst;
   if (isa_and_nonnull<DbgInfoIntrinsic>(i))
     return;
@@ -3765,6 +3883,11 @@ void Executor::terminateState(ExecutionState &state,
   }
 
   interpreterHandler->incPathsExplored();
+  if (verification) {
+    interpreterHandler->addToReadSet(state.getReadSet());
+    interpreterHandler->addToWriteSet(state.getWriteSet());
+    interpreterHandler->addToReadWriteOverlap(state.overlap);
+  }
   executionTree->setTerminationType(state, reason);
 
   std::vector<ExecutionState *>::iterator it =
@@ -4409,6 +4532,344 @@ void Executor::resolveExact(ExecutionState &state,
   }
 }
 
+std::vector<std::string> Executor::formatPacketOffsetName(ExecutionState &state, ref<Expr> byteOffset, unsigned bytes) {
+  if (ConstantExpr *offsetCe = dyn_cast<ConstantExpr>(byteOffset)) {
+    std::vector<std::string> valueStrs; 
+    uint64_t val = offsetCe->getZExtValue();
+
+    for (unsigned i = 0; i < bytes; i++) {
+      valueStrs.push_back("b" + std::to_string(val + i));
+    }
+
+    return valueStrs;
+  } else {
+    std::vector<std::string> valueStrs;
+    valueStrs.push_back("sym");
+    return valueStrs;
+  }
+}
+
+void Executor::handleMapLookupAndUpdate(ExecutionState &state, llvm::Instruction *i, ref<Expr> value) {
+  llvm::Value *firstOperand = i->getOperand(0);
+  llvm::Value *secondOperand = i->getOperand(1);
+  std::string fName = i->getFunction()->getName().str();
+  if (((fName == "map_lookup_elem" || fName == "array_lookup_elem") && secondOperand->getName().str() == "retval")
+      || ((fName == "map_update_elem" || fName == "array_update_elem") && firstOperand->getType()->isPointerTy())
+      || (fName == "bpf_redirect_map"  && secondOperand->getName().str() == "redirected_elem")) {
+    ObjectPair lookupOP;
+    bool lookupResolveSuccess;
+    if (state.addressSpace.resolveOne(state, solver.get(), value, lookupOP, lookupResolveSuccess) && lookupResolveSuccess) {
+      const MemoryObject *lookupMO = lookupOP.first;
+      if (state.isMapMemoryObject(lookupMO->id)) {
+        MapInfo mapInfo = state.getMapInfo(lookupMO->id);
+        if (fName == "map_update_elem" || fName ==  "array_update_elem") {
+          if (state.generateMode) {
+            state.addMapWrite(mapInfo.mapName, state.mapOperationKey, state.nextMapKey);
+          } else {
+            std::set<std::pair<ref<Expr>, std::string>> accesses = state.getMapWrite(mapInfo.mapName);
+            state.addCheckWrite(mapInfo.mapName, state.mapOperationKey, state.nextMapKey);
+            accesses.merge(state.getMapRead(mapInfo.mapName));
+            for (auto &access : accesses) {
+              ref<Expr> equal = EqExpr::create(access.first, state.mapOperationKey);
+              bool result;
+              if (solver->mayBeTrue(state.constraints, equal, result, state.queryMetaData) && result) {
+                state.addToOverlap(mapInfo.mapName, state.nextMapKey);
+                break;
+              }
+            }
+          }
+        } else {
+          if (state.generateMode) {
+            state.addMapRead(mapInfo.mapName, state.mapOperationKey, state.nextMapKey);
+          } else {
+            std::set<std::pair<ref<Expr>, std::string>> writes = state.getMapWrite(mapInfo.mapName);
+            state.addCheckRead(mapInfo.mapName, state.mapOperationKey, state.nextMapKey);
+            for (auto &write : writes) {
+              ref<Expr> equal = EqExpr::create(write.first, state.mapOperationKey);
+              bool result;
+              if (solver->mayBeTrue(state.constraints, equal, result, state.queryMetaData) && result) {
+                state.addToOverlap(mapInfo.mapName, state.nextMapKey);
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+void Executor::handleArrayMapLoad(ExecutionState &state, llvm::LoadInst *i, ref<Expr> value) {
+  ObjectPair lookupOP;
+  bool lookupResolveSuccess;
+  std::string fName = i->getFunction()->getName().str();
+  if (fName != "array_allocate" && fName != "array_lookup_elem" && fName != "array_update_elem" 
+      && fName != "memcpy" && fName != "array_reset" && fName != "bpf_map_lookup_elem"
+      && i->getPointerOperandType()->isPointerTy()
+      && i->getPointerOperandType()->getPointerElementType()->isPointerTy()) {
+    if (state.addressSpace.resolveOne(state, solver.get(), value, lookupOP, lookupResolveSuccess) && lookupResolveSuccess) {
+      const MemoryObject *lookupMO = lookupOP.first;
+      assert(lookupMO);
+      if (state.isMapMemoryObject(lookupMO->id)) {
+        ref<Expr> offset = lookupMO->getOffsetExpr(value);
+        MapInfo mapInfo = state.getMapInfo(lookupMO->id);
+        if (mapInfo.mapType == MapType::Array) {
+          std::string keyName = getMapKeyString(offset, mapInfo.valueSize);
+          ref<Expr> keyExpr = state.getMapReadForString(mapInfo.mapName, keyName);
+          if (state.generateMode) {
+            state.addMapRead(mapInfo.mapName, keyExpr, keyName);
+          } else {
+            std::set<std::pair<ref<Expr>, std::string>> writes = state.getMapWrite(mapInfo.mapName);
+            state.addCheckRead(mapInfo.mapName, keyExpr, keyName);
+            for (auto &write : writes) {
+              ref<Expr> equal = EqExpr::create(write.first, keyExpr);
+              bool result;
+              if (solver->mayBeTrue(state.constraints, equal, result, state.queryMetaData) && result) {
+                state.addToOverlap(mapInfo.mapName, keyName);
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+void Executor::handleMapStore(ExecutionState &state, llvm::Instruction *i, ObjectPair op, ref<Expr> offset) {
+  llvm::Value *secondOperand = i->getOperand(1);
+  const MemoryObject *mo = op.first;
+  if (i->getFunction()->getName().str() != "memcpy" && state.isMapMemoryObject(mo->id)) {
+    MapInfo mapInfo = state.getMapInfo(mo->id);
+    if (mapInfo.mapType == MapType::Array) {
+      std::string key = getMapKeyString(offset, state.getMapInfo(mo->id).valueSize);
+      ref<Expr> keyExpr = state.getMapReadForString(mapInfo.mapName, key);
+      if (state.generateMode) {
+        state.addMapWrite(mapInfo.mapName, keyExpr, key);
+      } else {
+        state.addCheckWrite(mapInfo.mapName, keyExpr, key);
+        std::set<std::pair<ref<Expr>, std::string>> accesses = state.getMapWrite(mapInfo.mapName);
+        accesses.merge(state.getMapRead(mapInfo.mapName));
+        for (auto &access : accesses) {
+          ref<Expr> equal = EqExpr::create(access.first, keyExpr);
+          bool result;
+          if (solver->mayBeTrue(state.constraints, equal, result, state.queryMetaData) && result) {
+            state.addToOverlap(mapInfo.mapName, key);
+            break;
+          }
+        }
+      }
+    } else {
+      std::vector<llvm::Value*> references;
+      if (LoadInst *loadInst = dyn_cast<LoadInst>(secondOperand)) {
+        references = state.findOriginalMapCall(loadInst->getOperand(0));
+      } else if (GetElementPtrInst *getElemPtr = dyn_cast<GetElementPtrInst>(secondOperand)) {
+        if (LoadInst *loadInst = dyn_cast<LoadInst>(getElemPtr->getOperand(0))) {
+          references = state.findOriginalMapCall(loadInst->getOperand(0));
+        }
+      }
+      assert(!references.empty() && "Could not find original call to map");
+      Value *val = references.back();
+      std::string key = state.getMapCallKey(val);
+      ref<Expr> keyExpr = state.getMapCallExpr(val);
+      if (state.generateMode) {
+        state.addMapWrite(mapInfo.mapName, keyExpr, key);
+      } else {
+        std::set<std::pair<ref<Expr>, std::string>> accesses = state.getMapWrite(mapInfo.mapName);
+        accesses.merge(state.getMapRead(mapInfo.mapName));
+        for (auto &access : accesses) {
+          ref<Expr> equal = EqExpr::create(access.first, keyExpr);
+          bool result;
+          if (solver->mayBeTrue(state.constraints, equal, result, state.queryMetaData) && result) {
+            state.addToOverlap(mapInfo.mapName, key);
+            break;
+          }
+        }
+      }
+    }
+  }
+}
+
+std::string Executor::getMapKeyString(ref<Expr> offset, unsigned int size) {
+  std::string valueStr;
+  if (ref<ConstantExpr> offsetToArg = dyn_cast<ConstantExpr>(offset) ) {
+    unsigned int off = offsetToArg->getZExtValue() / size;
+    std::stringstream valueInHex;
+      valueInHex << std::setfill('0') 
+                << std::setw(4 * 2) 
+                << std::hex 
+                << off;
+    std::string valueHex = valueInHex.str();
+    std::string nextHex;
+    unsigned int x;
+    assert(valueHex.size() == (4 * 2));
+    for (std::size_t i = 0; i < 4; i++) {
+      std::stringstream nextBytes;
+      std::size_t index = valueHex.size() - 2 * (i + 1);
+      nextHex = valueHex.substr(index, 2);
+      nextBytes << std::hex << nextHex;
+      nextBytes >> x;
+      valueStr += ("b" + std::to_string(i) + "(" + std::to_string(x) + ")_");
+    }
+  } else {
+    valueStr = "b0(sym)_b1(sym)_b2(sym)_b3(sym)_";
+  }
+
+  return valueStr;
+}
+
+std::string Executor::getMapKeyString(ref<Expr> offset, unsigned int size, const ObjectState *os) {
+  std::string valueStr;
+  if (ref<ConstantExpr> offsetToArg = dyn_cast<ConstantExpr>(offset) ) {
+    unsigned int off = offsetToArg->getZExtValue();
+    unsigned int keySizeInBytes = size / 8;
+    for (unsigned int i = 0; i < keySizeInBytes; i++) {
+      ref<Expr> val = os->read8(off + i);
+      if (ConstantExpr *valCE = dyn_cast<ConstantExpr>(val)) {
+        std::string currValStr;
+        valCE->toString(currValStr, 10);
+        valueStr += ("b" + std::to_string(i) + "(" + currValStr + ")_");
+      } else {
+        valueStr += ("b" + std::to_string(i) + "(sym)_");
+      }
+    }
+  } else {
+    valueStr = "b0(sym)_b1(sym)_b2(sym)_b3(sym)_";
+  }
+  return valueStr;
+}
+
+std::string Executor::formatMapName(std::string name) {
+  std::string::size_type pos = name.find('.');
+  if (pos != std::string::npos) {
+    return name.substr(0, pos);
+  }
+  return name;
+}
+
+unsigned Executor::getMapArgSize(llvm::Value *v) {
+  unsigned keySize = 32;
+  if (auto const *bitcastKey = dyn_cast<llvm::BitCastInst>(v)) {
+    llvm::Type *t = bitcastKey->getSrcTy()->getPointerElementType();
+    if (t->isSized()) {
+      keySize = getWidthForLLVMType(t);
+    } else if (t->isStructTy()) {
+      llvm::StructType *st = cast<llvm::StructType>(bitcastKey->getSrcTy()->getPointerElementType());
+      keySize = kmodule->targetData->getStructLayout(st)->getSizeInBits();
+    } else {
+      assert(0 && "Error: case for argument of this type not implemented yet.");
+    }
+  }
+  return keySize;
+}
+
+void Executor::handleMapInit(ExecutionState &state, llvm::Instruction *i, ref<Expr> value) {
+  llvm::Value *firstOperand = i->getOperand(0);
+  llvm::Value *secondOperand = i->getOperand(1);
+  std::string fName = i->getFunction()->getName().str();
+
+  // Get the memory object of the array map
+  if (isa<GetElementPtrInst>(secondOperand) && isa<CallBase>(firstOperand)) {
+    llvm::GetElementPtrInst *gep = cast<llvm::GetElementPtrInst>(secondOperand);
+    CallBase *callB = cast<CallBase>(firstOperand);
+    Value *fp = callB->getCalledOperand();
+    Function *f = getTargetFunction(fp);
+    if (gep->getPointerOperandType()->isPointerTy() 
+        && gep->getPointerOperandType()->getPointerElementType()->isStructTy()
+        && (gep->getPointerOperandType()->getPointerElementType()->getStructName().str() == "struct.ArrayStub"
+          || (gep->getPointerOperandType()->getPointerElementType()->getStructName().str() == "struct.MapStub" 
+            && gep->getName().str() == "values_present"))
+        && f->getName().str() == "calloc") {
+      ObjectPair callocOP;
+      bool callocResolveSuccess;
+      if (state.addressSpace.resolveOne(state, solver.get(), value, callocOP, callocResolveSuccess)) {
+        const MemoryObject *callocMO = callocOP.first;
+        state.addMapMemoryObjects(callocMO->id, fName);
+      } else {
+        assert(0 && "Could not find object from calloc");
+      }
+    }
+  }
+
+  if (fName == "array_allocate" && firstOperand == i->getFunction()->getArg(2)) {
+    if (ConstantExpr *ce = dyn_cast<ConstantExpr>(value)) {
+      state.nextValueSize = ce->getZExtValue();
+      state.nextKeySize = sizeof(unsigned int);
+    } else {
+      state.nextValueSize = 0;
+    }
+  }
+
+  if (fName == "map_allocate" && firstOperand == i->getFunction()->getArg(4)) {
+    if (ConstantExpr *ce = dyn_cast<ConstantExpr>(value)) {
+      state.nextValueSize = ce->getZExtValue();
+    } else {
+      state.nextValueSize = 0;
+    }
+  }
+
+  if (fName == "map_allocate" && firstOperand == i->getFunction()->getArg(3)) {
+    if (ConstantExpr *ce = dyn_cast<ConstantExpr>(value)) {
+      state.nextKeySize = ce->getZExtValue();
+    } else {
+      state.nextKeySize = 0;
+    }
+  }
+
+  // Get the name of the map
+  if ((fName == "array_allocate" || fName == "map_allocate") 
+      && firstOperand == i->getFunction()->getArg(0)) {
+    std::string argStr = specialFunctionHandler->readStringAtAddress(state, value);
+    state.nextMapName = argStr;
+  }
+}
+
+void Executor::handlePacketDataStore(ExecutionState &state, llvm::Instruction *i, const MemoryObject *mo, ref<Expr> offset, unsigned bytes) {
+  if (state.getXDPMemoryObjectID() != 0 && state.getXDPMemoryObjectID() == mo->id) {
+    for (std::string accessedStr : formatPacketOffsetName(state, offset, bytes)) {
+      state.addPacketWrite(accessedStr);
+    }
+  }
+}
+
+void Executor::handlePacketDataLoad(ExecutionState &state, llvm::Instruction *i, const MemoryObject *mo, ref<Expr> offset, unsigned bytes) {
+  if (state.getXDPMemoryObjectID() != 0 && state.getXDPMemoryObjectID() == mo->id) {
+    for (std::string accessedStr : formatPacketOffsetName(state, offset, bytes)) {
+      state.addPacketRead(accessedStr);
+    }
+  }
+}
+
+void Executor::handlePacketDataInit(ExecutionState &state, llvm::Instruction *i, ref<Expr> value) {
+  if (state.getXDPMemoryObjectID() != 0) {
+    return;
+  }
+
+  llvm::Value *firstOperand = i->getOperand(0);
+  if (IntToPtrInst *intToPtr = dyn_cast<IntToPtrInst>(firstOperand)) {
+    if (ZExtInst *zext = dyn_cast<ZExtInst>(intToPtr->getOperand(0))) {
+      if (LoadInst *loadInst = dyn_cast<LoadInst>(zext->getOperand(0))) {
+        if (GetElementPtrInst* gep = dyn_cast<GetElementPtrInst>(loadInst->getOperand(0))) {
+          if (gep->isInBounds() 
+              && gep->hasAllZeroIndices() 
+              && gep->getPointerOperandType()->isPointerTy() 
+              && gep->getPointerOperandType()->getPointerElementType()->isStructTy()
+              && gep->getPointerOperandType()->getPointerElementType()->getStructName().str() == "struct.xdp_md") {
+          ObjectPair newOp;
+          bool resolveSuccess;
+          if (state.addressSpace.resolveOne(state, solver.get(), value, newOp, resolveSuccess)) {
+            const MemoryObject *packetMo = newOp.first;
+            state.setXDPMemoryObjectID(packetMo->id);
+          } else {
+            assert(0 && "Storing an unresolved pointer");
+          }
+        }
+        }
+      }
+    }
+  }
+}
+
 void Executor::executeMemoryOperation(ExecutionState &state,
                                       bool isWrite,
                                       ref<Expr> address,
@@ -4495,6 +4956,19 @@ void Executor::executeMemoryOperation(ExecutionState &state,
             terminateStateOnProgramError(state, "memory error: object read only",
                                          StateTerminationType::ReadOnly);
           } else {
+            if (verification) {
+              Instruction *i = state.prevPC->inst;
+              llvm::Value *firstOperand = i->getOperand(0);
+              llvm::Value *secondOperand = i->getOperand(1);
+
+              handlePacketDataInit(state, i, value);
+              handleMapInit(state, i, value);
+              handleMapLookupAndUpdate(state, i, value);    
+              handleMapStore(state, i, op, offset);        
+              handlePacketDataStore(state, i, mo, offset, bytes);
+              
+            }
+
             ObjectState *wos = state.addressSpace.getWriteable(mo, os);
             wos->write(offset, value);
           }
@@ -4503,7 +4977,12 @@ void Executor::executeMemoryOperation(ExecutionState &state,
 
           if (interpreterOpts.MakeConcreteSymbolic)
             result = replaceReadWithSymbolic(state, result);
-
+          
+          if (verification) {
+            llvm::LoadInst *i = cast<llvm::LoadInst>(state.prevPC->inst);
+            handlePacketDataLoad(state, i, mo, offset, bytes);
+            handleArrayMapLoad(state, i, result);
+          }
           bindLocal(target, state, result);
         }
 

@@ -22,6 +22,13 @@
 #include "klee/Module/KInstIterator.h"
 #include "klee/Solver/Solver.h"
 #include "klee/System/Time.h"
+#include "llvm/IR/Value.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/DebugLoc.h"
+#include "llvm/IR/DebugInfoMetadata.h"
+#include <unordered_set>
 
 #include <map>
 #include <memory>
@@ -145,6 +152,20 @@ struct CleanupPhaseUnwindingInformation : public UnwindingInformation {
   }
 };
 
+enum class MapType {
+  Array,
+  Map,
+  MapOfMap
+};
+
+struct MapInfo {
+  std::string mapName;
+  unsigned int mapSize;
+  unsigned int keySize;
+  unsigned int valueSize;
+  MapType mapType;
+};
+
 /// @brief ExecutionState representing a path under exploration
 class ExecutionState {
 #ifdef KLEE_UNITTEST
@@ -255,6 +276,47 @@ public:
   using base_mo_t = std::map<uint64_t, std::set<ref<Expr>>>;
   base_mo_t base_mos;
 
+  /// @brief Packet read set of path.
+  std::set<std::string> packetRead;
+
+  /// @brief Packet write of path.
+  std::set<std::string> packetWrite;
+
+  /// @brief Map read set of path.
+  std::unordered_map<std::string, std::set<std::pair<ref<Expr>, std::string>>> mapRead;
+
+  /// @brief Map write set of path.
+  std::unordered_map<std::string, std::set<std::pair<ref<Expr>, std::string>>> mapWrite;
+
+  /// @brief All map reads of path.
+  std::unordered_map<std::string, std::set<std::pair<ref<Expr>, std::string>>> allReads;
+
+  /// @brief All map writes set of path.
+  std::unordered_map<std::string, std::set<std::pair<ref<Expr>, std::string>>> allWrites;
+
+  /// @brief Set of values which are part of the references to the arguments of a function
+  std::unordered_set<llvm::Value*> argContents;
+
+  /// @brief Map from the memory object ID of that map to the name of the map and size of the key
+  std::unordered_map<unsigned int, MapInfo> mapMemoryObjects;
+
+  /// @brief Mapping from calls to map helper functions to a string representation and call key
+  std::unordered_map<llvm::Value*, std::pair<std::string, std::string>> mapCallStrings;
+  std::unordered_map<llvm::Value*, ref<Expr>> mapCallArgumentExpressions;
+
+  unsigned int xdpMoId = 0;
+
+  std::string nextMapName;
+  std::string nextMapKey;
+  unsigned int nextMapSize;
+  unsigned int nextKeySize;
+  unsigned int nextValueSize;
+  ref<Expr> mapOperationKey;
+
+  bool generateMode = true;
+
+  std::set<std::string> overlap;
+
 public:
 #ifdef KLEE_UNITTEST
   // provide this function only in the context of unittests
@@ -272,6 +334,36 @@ public:
   ~ExecutionState();
 
   ExecutionState *branch();
+
+  void addPacketRead(std::string newRead);
+  void addMapRead(std::string mapName, ref<Expr> key, std::string keyName);
+  void addPacketWrite(std::string newWrite);
+  void addMapWrite(std::string mapName, ref<Expr> key, std::string keyName);
+  std::set<std::pair<ref<Expr>, std::string>> getMapRead(std::string mapName);
+  std::set<std::pair<ref<Expr>, std::string>> getMapWrite(std::string mapName);
+  ref<Expr> getMapReadForString(std::string mapName, std::string keyName);
+  void addToOverlap(std::string mapName, std::string keyValue);
+  void addCheckRead(std::string mapName, ref<Expr> key, std::string keyName);
+  void addCheckWrite(std::string mapName, ref<Expr> key, std::string keyName);
+
+  std::set<std::string> getReadSet();
+  std::set<std::string> getWriteSet();
+
+  bool isFunctionForAnalysis(llvm::Function *func);
+  bool isAddressValue(llvm::Value *val);
+
+  void setXDPMemoryObjectID(unsigned int id);
+  unsigned int getXDPMemoryObjectID();
+
+  void addMapString(llvm::Value *val, std::string fName, std::string mapName, std::string key, const InstructionInfo *info, ref<Expr> keyExpr);
+  std::string getMapCallKey(llvm::Value *val);
+  ref<Expr> getMapCallExpr(llvm::Value *val);
+
+  void addMapMemoryObjects(unsigned int id, std::string allocateFunctionName);
+
+  MapInfo getMapInfo(unsigned int id);
+  bool isMapMemoryObject(unsigned int id);
+  void printMapMemoryObjects();
 
   void pushFrame(KInstIterator caller, KFunction *kf);
   void popFrame();

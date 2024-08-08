@@ -31,6 +31,8 @@
 
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/Instructions.h"
 
 #include <map>
 #include <memory>
@@ -179,6 +181,9 @@ private:
   /// false, it is buggy (it needs to validate its writes).
   bool ivcEnabled;
 
+  /// If verification is enabled.
+  bool verification;
+
   /// The maximum time to allow for a single core solver query.
   /// (e.g. for a single STP query)
   time::Span coreSolverTimeout;
@@ -207,6 +212,9 @@ private:
 
   /// Typeids used during exception handling
   std::vector<ref<Expr>> eh_typeids;
+
+  // Return the formatted byte offset string to be added to the read and write sets
+  std::vector<std::string> formatPacketOffsetName(ExecutionState &state, ref<Expr> byteOffset, unsigned bytes);
 
   /// Return the typeid corresponding to a certain `type_info`
   ref<ConstantExpr> getEhTypeidFor(ref<Expr> type_info);
@@ -310,7 +318,27 @@ private:
                    KInstruction *ki,
                    llvm::Function *f,
                    std::vector< ref<Expr> > &arguments);
-                   
+  
+  // handle array map access
+  void handleMapLookupAndUpdate(ExecutionState &state, llvm::Instruction *i, ref<Expr> value);
+  // Handle initialisation for array maps
+  void handleMapInit(ExecutionState &state, llvm::Instruction *i, ref<Expr> value);
+  void handleArrayMapLoad(ExecutionState &state, llvm::LoadInst *i, ref<Expr> value);
+  void handleMapStore(ExecutionState &state, llvm::Instruction *i, ObjectPair op, ref<Expr> offset);
+  std::string getMapKeyString(ref<Expr> key, unsigned int size, const ObjectState *os);
+  std::string getMapKeyString(ref<Expr> offset, unsigned int size);
+  unsigned getMapArgSize(llvm::Value *v);
+  std::string formatMapName(std::string name);
+
+  // Handle finding the packet data
+  void handlePacketDataInit(ExecutionState &state, llvm::Instruction *i, ref<Expr> value);
+
+  // Handle storing to packet data
+  void handlePacketDataStore(ExecutionState &state, llvm::Instruction *i, const MemoryObject *mo, ref<Expr> offset, unsigned bytes);
+
+  // Handle loading from packet data
+  void handlePacketDataLoad(ExecutionState &state, llvm::Instruction *i, const MemoryObject *mo, ref<Expr> offset, unsigned bytes);
+
   // do address resolution / object binding / out of bounds checking
   // and perform the operation
   void executeMemoryOperation(ExecutionState &state,

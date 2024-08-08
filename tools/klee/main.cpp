@@ -286,6 +286,36 @@ namespace {
            cl::desc("Link the llvm libc++ library into the bitcode (default=false)"),
            cl::init(false),
            cl::cat(LinkCat));
+  
+
+  /*** Functional Verification Options ***/
+  
+  cl::OptionCategory FunctionalVerificationCat("Functional Verification Options",
+                                               "These options are used for functional verification of eBPF programs.");
+
+  cl::opt<bool>
+  Verification("verification",
+              cl::init(false),
+              cl::desc("Generate data for verification"),
+              cl::cat(FunctionalVerificationCat));
+
+  cl::opt<bool>
+  ReadSet("read-set",
+          cl::init(false),
+          cl::desc("Generate the read set of the program"),
+          cl::cat(FunctionalVerificationCat));
+  
+  cl::opt<bool>
+  WriteSet("write-set",
+          cl::init(false),
+          cl::desc("Generate the write set of the program"),
+          cl::cat(FunctionalVerificationCat));
+
+  cl::opt<bool>
+  ReadWriteTwoPhase("read-write-two-phase",
+          cl::init(false),
+          cl::desc("Two phases of exeuction: generate read write sets, and looking up into read and write sets"),
+          cl::cat(FunctionalVerificationCat));
 }
 
 namespace klee {
@@ -300,6 +330,8 @@ private:
   Interpreter *m_interpreter;
   TreeStreamWriter *m_pathWriter, *m_symPathWriter;
   std::unique_ptr<llvm::raw_ostream> m_infoFile;
+  std::unique_ptr<llvm::raw_ostream> m_readWriteFile;
+  std::unique_ptr<llvm::raw_ostream> m_readWriteOverlapFile;
 
   SmallString<128> m_outputDirectory;
 
@@ -307,6 +339,9 @@ private:
   unsigned m_numGeneratedTests; // Number of tests successfully generated
   unsigned m_pathsCompleted; // number of completed paths
   unsigned m_pathsExplored; // number of partially explored and completed paths
+  std::set<std::string> m_readSet; // write set
+  std::set<std::string> m_writeSet; // read set
+  std::set<std::string> m_readWriteOverlap;
 
   // used for writing .ktest files
   int m_argc;
@@ -317,13 +352,24 @@ public:
   ~KleeHandler();
 
   llvm::raw_ostream &getInfoStream() const { return *m_infoFile; }
+  llvm::raw_ostream &getReadWriteStream() const { return *m_readWriteFile; }
+  llvm::raw_ostream &getReadWriteOverlapStream() const { return *m_readWriteOverlapFile; }
   /// Returns the number of test cases successfully generated so far
   unsigned getNumTestCases() { return m_numGeneratedTests; }
   unsigned getNumPathsCompleted() { return m_pathsCompleted; }
   unsigned getNumPathsExplored() { return m_pathsExplored; }
+  std::set<std::string> getReadSet() { return m_readSet; }
+  std::set<std::string> getWriteSet() { return m_writeSet; }
+  std::set<std::string> getReadWriteOverlap() { return m_readWriteOverlap; }
   void incPathsCompleted() { ++m_pathsCompleted; }
   void incPathsExplored(std::uint32_t num = 1) {
     m_pathsExplored += num; }
+  void addToReadSet(std::set<std::string> newSet) {
+    m_readSet.merge(newSet); }
+  void addToWriteSet(std::set<std::string> newSet) {
+    m_writeSet.merge(newSet); }
+  void addToReadWriteOverlap(std::set<std::string> newSet) {
+    m_readWriteOverlap.merge(newSet); }
 
   void setInterpreter(Interpreter *i);
 
@@ -420,6 +466,15 @@ KleeHandler::KleeHandler(int argc, char **argv)
 
   // open info
   m_infoFile = openOutputFile("info");
+
+  // open read-write file
+  if (ReadSet || WriteSet) {
+    m_readWriteFile = openOutputFile("readWriteInformation");
+  }
+
+  if (ReadWriteTwoPhase) {
+    m_readWriteOverlapFile = openOutputFile("overlap");
+  }
 }
 
 KleeHandler::~KleeHandler() {
@@ -1123,7 +1178,8 @@ int main(int argc, char **argv, char **envp) {
      {&ChecksCat,      &DebugCat,    &ExtCallsCat, &ExprCat,     &LinkCat,
       &MemoryCat,      &MergeCat,    &MiscCat,     &ModuleCat,   &ReplayCat,
       &SearchCat,      &SeedingCat,  &SolvingCat,  &StartCat,    &StatsCat,
-      &TerminationCat, &TestCaseCat, &TestGenCat,  &ExecTreeCat, &ExecTreeCat});
+      &TerminationCat, &TestCaseCat, &TestGenCat,  &ExecTreeCat, &ExecTreeCat,
+      &FunctionalVerificationCat});
   llvm::InitializeNativeTarget();
 
   parseArguments(argc, argv);
@@ -1394,6 +1450,7 @@ int main(int argc, char **argv, char **envp) {
 
   Interpreter::InterpreterOptions IOpts;
   IOpts.MakeConcreteSymbolic = MakeConcreteSymbolic;
+  IOpts.Verification = Verification;
   KleeHandler *handler = new KleeHandler(pArgc, pArgv);
   Interpreter *interpreter =
     theInterpreter = Interpreter::create(ctx, IOpts, handler);
@@ -1582,6 +1639,54 @@ int main(int argc, char **argv, char **envp) {
     << "KLEE: done: valid queries = " << queriesValid << "\n"
     << "KLEE: done: invalid queries = " << queriesInvalid << "\n"
     << "KLEE: done: query cex = " << queryCounterexamples << "\n";
+  
+  std::stringstream readWriteInfo;
+  if (Verification) {
+    if (ReadSet) {
+      handler->getReadWriteStream() << "KLEE: done: read set = {";
+      std::set<std::string> readSet = handler->getReadSet();
+      bool first = true;
+      for (auto const& read : readSet) {
+        if (!first)
+          handler->getReadWriteStream() << ", ";
+        else
+          first = false;
+        handler->getReadWriteStream() << read;
+      }
+      handler->getReadWriteStream() << "} \n";
+    }
+
+    if (WriteSet) {
+      handler->getReadWriteStream() << "KLEE: done: write set = {";
+      std::set<std::string> writeSet = handler->getWriteSet();
+      bool first = true;
+      for (auto const& write : writeSet) {
+        if (!first)
+          handler->getReadWriteStream() << ", ";
+        else 
+          first = false;
+        handler->getReadWriteStream() << write;
+      }
+      handler->getReadWriteStream() << "} \n";
+    }
+
+    if (ReadWriteTwoPhase) {
+      readWriteInfo << "Read and Write Set overlap \n{ \n";
+
+      // handler->getReadWriteOverlapStream() << "Read and Write Set overlap \n{ \n";
+      std::set<std::string> overlap = handler->getReadWriteOverlap();
+      bool first = true;
+      for (auto const& elem : overlap) {
+        if (!first)
+          readWriteInfo << ", \n";
+        else 
+          first = false;
+        readWriteInfo << "\t" << elem;
+      }
+      readWriteInfo << "\n} \n";
+      handler->getReadWriteOverlapStream() << readWriteInfo.str();
+    }
+  }
 
   std::stringstream stats;
   stats << '\n'
@@ -1599,8 +1704,18 @@ int main(int argc, char **argv, char **envp) {
     llvm::errs().changeColor(llvm::raw_ostream::GREEN,
                              /*bold=*/true,
                              /*bg=*/false);
-
   llvm::errs() << stats.str();
+
+  if (useColors)
+    llvm::errs().changeColor(llvm::raw_ostream::CYAN,
+                             /*bold=*/true,
+                             /*bg=*/false);
+
+  if (Verification) {
+    if (ReadWriteTwoPhase) {
+      llvm::errs() << "\n" << readWriteInfo.str() << "\n";
+    }
+  }
 
   if (useColors)
     llvm::errs().resetColor();

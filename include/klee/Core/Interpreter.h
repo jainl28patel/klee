@@ -43,6 +43,9 @@ public:
 
   virtual void incPathsCompleted() = 0;
   virtual void incPathsExplored(std::uint32_t num = 1) = 0;
+  virtual void addToReadSet(std::set<std::string> newSet) = 0;
+  virtual void addToWriteSet(std::set<std::string> newSet) = 0;
+  virtual void addToReadWriteOverlap(std::set<std::string> newSet) = 0;
 
   virtual void processTestCase(const ExecutionState &state,
                                const char *err,
@@ -83,9 +86,10 @@ public:
     /// symbolic values. This is used to test the correctness of the
     /// symbolic execution on concrete programs.
     unsigned MakeConcreteSymbolic;
+    bool Verification;
 
     InterpreterOptions()
-      : MakeConcreteSymbolic(false)
+      : MakeConcreteSymbolic(false), Verification(false)
     {}
   };
 
