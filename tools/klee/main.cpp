@@ -60,6 +60,7 @@ DISABLE_WARNING_POP
 #include <iomanip>
 #include <iterator>
 #include <sstream>
+#include <iostream>
 
 using namespace llvm;
 using namespace klee;
@@ -322,6 +323,13 @@ namespace {
           cl::init(false),
           cl::desc("Two phases of exeuction: generate read write sets, and looking up into read and write sets"),
           cl::cat(FunctionalVerificationCat));
+
+  // Implementing Map access control
+  cl::opt<std::string>
+  MapAccessControlFile("map-access-control-file",
+          cl::init(""),
+          cl::desc("File containing map access control information"),
+          cl::cat(FunctionalVerificationCat));
 }
 
 namespace klee {
@@ -348,6 +356,8 @@ private:
   unsigned m_pathsExplored; // number of partially explored and completed paths
   std::set<std::string> m_readSet; // write set
   std::set<std::string> m_writeSet; // read set
+  std::set<std::string> m_readSetMap; // read set map
+  std::set<std::string> m_writeSetMap; // write set map
   std::set<std::string> m_mapCorrelation; // Correlations between maps
   std::set<std::string> m_readWriteOverlap;
 
@@ -369,6 +379,8 @@ public:
   unsigned getNumPathsExplored() { return m_pathsExplored; }
   std::set<std::string> getReadSet() { return m_readSet; }
   std::set<std::string> getWriteSet() { return m_writeSet; }
+  std::set<std::string> getReadSetMap() { return m_readSetMap; }
+  std::set<std::string> getWriteSetMap() { return m_writeSetMap; }
   std::set<std::string> getCorrelatedMaps() { return m_mapCorrelation; }
   std::set<std::string> getReadWriteOverlap() { return m_readWriteOverlap; }
   void incPathsCompleted() { ++m_pathsCompleted; }
@@ -378,6 +390,10 @@ public:
     m_readSet.merge(newSet); }
   void addToWriteSet(std::set<std::string> newSet) {
     m_writeSet.merge(newSet); }
+  void addToReadSetMap(std::set<std::string> newSet) {
+    m_readSetMap.merge(newSet); }
+  void addToWriteSetMap(std::set<std::string> newSet) {
+    m_writeSetMap.merge(newSet); }
   void addToMapCorrelation(std::set<std::string> newInfo) {
     m_mapCorrelation.merge(newInfo); }
   void addToReadWriteOverlap(std::set<std::string> newSet) {
@@ -1656,9 +1672,57 @@ int main(int argc, char **argv, char **envp) {
     << "KLEE: done: valid queries = " << queriesValid << "\n"
     << "KLEE: done: invalid queries = " << queriesInvalid << "\n"
     << "KLEE: done: query cex = " << queryCounterexamples << "\n";
-  
+
   std::stringstream readWriteInfo;
+
+  bool isMapAccessControlViolated = false;
   if (Verification) {
+    // Parse the map access control file
+    std::set<std::string> readOnlyMaps;
+    std::set<std::string> writeOnlyMaps;
+    std::set<std::string> readWriteMaps;
+    if(MapAccessControlFile != "") {
+      std::ifstream mapAccessControlFileStream(MapAccessControlFile);
+      std::string line;
+      while (std::getline(mapAccessControlFileStream, line)) {
+        std::istringstream iss(line);
+        std::string accessType, map1;
+        iss >> accessType >> map1;
+        if (accessType == "Read") {
+          readOnlyMaps.insert(map1);
+        } else if (accessType == "Write") {
+          writeOnlyMaps.insert(map1);
+        } else if (accessType == "ReadWrite") {
+          readWriteMaps.insert(map1);
+        }
+      }
+
+      std::string mapAccessControlResultFileName = MapAccessControlFile + ".result";
+      std::ofstream mapAccessControlResultFile(mapAccessControlResultFileName);
+
+      std::set<std::string> readSetMap = handler->getReadSetMap();
+      std::set<std::string> writeSetMap = handler->getWriteSetMap();
+
+      // TODO: Add String Reason for Violation
+
+      for(auto const& map : readSetMap) {
+        if(readOnlyMaps.find(map) == readOnlyMaps.end() && readWriteMaps.find(map) == readWriteMaps.end()) {
+          isMapAccessControlViolated = true;
+          mapAccessControlResultFile << "No Read Permission for map : " << map << "\n";
+        }
+      }
+
+      for(auto const& map : writeSetMap) {
+        if(writeOnlyMaps.find(map) == writeOnlyMaps.end() && readWriteMaps.find(map) == readWriteMaps.end()) {
+          isMapAccessControlViolated = true;
+          mapAccessControlResultFile << "No Write Permission for map : " << map << "\n";
+        }
+      }
+
+    }
+
+
+
     if (ReadSet) {
       handler->getReadWriteStream() << "KLEE: done: read set = {";
       std::set<std::string> readSet = handler->getReadSet();
@@ -1748,6 +1812,12 @@ int main(int argc, char **argv, char **envp) {
   handler->getInfoStream() << stats.str();
 
   delete handler;
+
+  if(isMapAccessControlViolated) {
+    std::cout << "Map Access control condition violated" << std::endl;
+  } else {
+    std::cout << "Map Access control : VALID" << std::endl;
+  }
 
   return 0;
 }

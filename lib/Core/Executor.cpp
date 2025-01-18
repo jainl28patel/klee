@@ -4016,7 +4016,9 @@ void Executor::terminateState(ExecutionState &state,
   interpreterHandler->incPathsExplored();
   if (verification) {
     interpreterHandler->addToReadSet(state.getReadSet());
+    interpreterHandler->addToReadSetMap(state.getReadSetMap());
     interpreterHandler->addToWriteSet(state.getWriteSet());
+    interpreterHandler->addToWriteSetMap(state.getWriteSetMap());
     interpreterHandler->addToMapCorrelation(state.formatMapCorrelations());
     interpreterHandler->addToReadWriteOverlap(state.overlap);
   }

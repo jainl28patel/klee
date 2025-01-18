@@ -389,6 +389,9 @@ public:
   std::set<std::string> getReadSet();
   std::set<std::string> getWriteSet();
 
+  std::set<std::string> getReadSetMap();
+  std::set<std::string> getWriteSetMap();
+
   bool isFunctionForAnalysis(llvm::Function *func);
   bool isAddressValue(llvm::Value *val);
 

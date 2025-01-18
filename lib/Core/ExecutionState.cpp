@@ -32,6 +32,7 @@
 #include <regex>
 #include <sstream>
 #include <stdarg.h>
+#include <iostream>
 
 using namespace llvm;
 using namespace klee;
@@ -259,6 +260,7 @@ void ExecutionState::addPacketWrite(std::string newWrite) {
 
 void ExecutionState::addMapWrite(std::string mapName, ref<Expr> key, std::string keyName) {
   auto it = mapWrite.find(mapName);
+  std::cout << "mapWrite : " << mapName << " " << keyName << "\n";
   if (it != mapWrite.end()) {
     it->second.insert(std::make_pair(key, keyName));
   } else {
@@ -282,6 +284,14 @@ std::set<std::string> ExecutionState::getReadSet() {
   return readSet;
 }
 
+std::set<std::string> ExecutionState::getReadSetMap() {
+  std::set<std::string> readSetMap;
+  for (auto &it : mapRead) {
+    readSetMap.insert(it.first);
+  }
+  return readSetMap;
+}
+
 std::set<std::string> ExecutionState::getWriteSet() {
   std::set<std::string> writeSet;
   std::string mw;
@@ -294,6 +304,14 @@ std::set<std::string> ExecutionState::getWriteSet() {
 
   writeSet.merge(packetWrite);
   return writeSet;
+}
+
+std::set<std::string> ExecutionState::getWriteSetMap() {
+  std::set<std::string> writeSetMap;
+  for (auto &it : mapWrite) {
+    writeSetMap.insert(it.first);
+  }
+  return writeSetMap;
 }
 
 bool ExecutionState::isFunctionForAnalysis(llvm::Function *func) {
