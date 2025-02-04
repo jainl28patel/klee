@@ -1799,18 +1799,29 @@ int main(int argc, char **argv, char **envp) {
   // helper function listing
   if(RestrictHelperFunctions)
   {
-    std::cout << "writing to file ------------- " << std::endl;
-    // std::string home = std::getenv("HOME");
-    std::ofstream out_file;
-    out_file.open("/home/jainil/Draco/DRACO-verifier/temp.txt", std::ios::app);
-    if (!out_file.is_open()) {
-      std::cerr << "Error: Could not open output file" << std::endl;
-    } else {
-      for(auto &i : handler->getHelperFunctionList()) {
-        std::cout << i << std::endl;
-        out_file << i << std::endl;
+    if(HelperFunctionRestrictionRuleFile!="")
+    {
+      std::ofstream output_file(HelperFunctionRestrictionRuleFile + ".result");
+      std::ifstream input_file(HelperFunctionRestrictionRuleFile);
+      bool violation = false;
+      auto h_fn = handler->getHelperFunctionList();
+      std::string line;
+      while(std::getline(input_file, line))
+      {
+        if(h_fn.find(line)!=h_fn.end()) {
+          violation = true;
+          output_file << "Restriction on use of helper function : " << line << std::endl;
+          std::cout << "Restriction on use of helper function : " << line << std::endl;
+        }
       }
-      out_file.close();
+
+      if(!violation) {
+        output_file << "No use of restricted function detected in any execution path" << std::endl;
+        std::cout << "No use of restricted function detected in any execution path" << std::endl;
+      }
+
+      input_file.close();
+      output_file.close();
     }
   }
 
