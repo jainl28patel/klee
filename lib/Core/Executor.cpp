@@ -487,7 +487,7 @@ Executor::Executor(LLVMContext &ctx, const InterpreterOptions &opts,
       pathWriter(0), symPathWriter(0), specialFunctionHandler(0), timers{time::Span(TimerInterval)},
       replayKTest(0), replayPath(0), usingSeeds(0),
       atMemoryLimit(false), inhibitForking(false), haltExecution(false),
-      ivcEnabled(false), verification(opts.Verification), debugLogBuffer(debugBufferString) {
+      ivcEnabled(false), verification(opts.Verification), debugLogBuffer(debugBufferString), restrictBpfHelpers(opts.restrictBpfHelpers) {
 
 
   const time::Span maxTime{MaxTime};
@@ -2607,6 +2607,17 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     unsigned numArgs = cb.arg_size();
     Function *f = getTargetFunction(fp);
 
+    if(this->restrictBpfHelpers)
+    {
+      // getting name of function being called
+      if(f!=nullptr && f->hasName())
+      {
+        // store the name of function being called to apply checks at last
+        const char* name = f->getName().data();
+        state.addHelperFunctionCall(std::string(name));
+      }
+    }
+
     // evaluate arguments
     std::vector< ref<Expr> > arguments;
     arguments.reserve(numArgs);
@@ -4021,6 +4032,7 @@ void Executor::terminateState(ExecutionState &state,
     interpreterHandler->addToWriteSetMap(state.getWriteSetMap());
     interpreterHandler->addToMapCorrelation(state.formatMapCorrelations());
     interpreterHandler->addToReadWriteOverlap(state.overlap);
+    interpreterHandler->addToAccessedHelperFunctionSet(state.helperFunctions);
   }
   executionTree->setTerminationType(state, reason);
 

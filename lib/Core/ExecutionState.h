@@ -319,6 +319,9 @@ public:
   /// @brief All map writes set of path.
   std::unordered_map<std::string, std::set<std::pair<ref<Expr>, std::string>>> allWrites;
 
+  /// @brief Set of all helper function called for path
+  std::set<std::string> helperFunctions;
+
   /// @brief Set of values which are part of the references to the arguments of a function
   std::unordered_set<llvm::Value*> argContents;
 
@@ -379,6 +382,7 @@ public:
   void addMapRead(std::string mapName, ref<Expr> key, std::string keyName);
   void addPacketWrite(std::string newWrite);
   void addMapWrite(std::string mapName, ref<Expr> key, std::string keyName);
+  void addHelperFunctionCall(std::string funcName);
   std::set<std::pair<ref<Expr>, std::string>> getMapRead(std::string mapName);
   std::set<std::pair<ref<Expr>, std::string>> getMapWrite(std::string mapName);
   ref<Expr> getMapReadForString(std::string mapName, std::string keyName);
@@ -391,6 +395,8 @@ public:
 
   std::set<std::string> getReadSetMap();
   std::set<std::string> getWriteSetMap();
+
+  std::set<std::string> getCalledHelperFunctionSet();
 
   bool isFunctionForAnalysis(llvm::Function *func);
   bool isAddressValue(llvm::Value *val);

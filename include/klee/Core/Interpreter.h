@@ -49,6 +49,7 @@ public:
   virtual void addToWriteSetMap(std::set<std::string> newSet) = 0;
   virtual void addToMapCorrelation(std::set<std::string> newInfo) = 0;
   virtual void addToReadWriteOverlap(std::set<std::string> newSet) = 0;
+  virtual void addToAccessedHelperFunctionSet(std::set<std::string> newSet) = 0;
 
   virtual void processTestCase(const ExecutionState &state,
                                const char *err,
@@ -90,6 +91,7 @@ public:
     /// symbolic execution on concrete programs.
     unsigned MakeConcreteSymbolic;
     bool Verification;
+    bool restrictBpfHelpers;
 
     InterpreterOptions()
       : MakeConcreteSymbolic(false), Verification(false)

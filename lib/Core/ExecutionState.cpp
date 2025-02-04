@@ -270,6 +270,10 @@ void ExecutionState::addMapWrite(std::string mapName, ref<Expr> key, std::string
   }
 }
 
+void klee::ExecutionState::addHelperFunctionCall(std::string funcName) {
+  this->helperFunctions.insert(funcName);
+}
+
 std::set<std::string> ExecutionState::getReadSet() {
   std::set<std::string> readSet;
   std::string mr;
@@ -312,6 +316,10 @@ std::set<std::string> ExecutionState::getWriteSetMap() {
     writeSetMap.insert(it.first);
   }
   return writeSetMap;
+}
+
+std::set<std::string> klee::ExecutionState::getCalledHelperFunctionSet() {
+  return helperFunctions;
 }
 
 bool ExecutionState::isFunctionForAnalysis(llvm::Function *func) {

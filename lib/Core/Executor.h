@@ -184,6 +184,9 @@ private:
   /// If verification is enabled.
   bool verification;
 
+  /// If bpf_helper function restriction is needed
+  bool restrictBpfHelpers;
+
   /// The maximum time to allow for a single core solver query.
   /// (e.g. for a single STP query)
   time::Span coreSolverTimeout;

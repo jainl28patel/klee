@@ -330,6 +330,20 @@ namespace {
           cl::init(""),
           cl::desc("File containing map access control information"),
           cl::cat(FunctionalVerificationCat));
+  
+  // Implement Helper function restrictions
+  cl::opt<bool>
+  RestrictHelperFunctions("restrict-helper-function",
+          cl::init(false),
+          cl::desc("Boolean representing if we implement helper function restrictions"),
+          cl::cat(FunctionalVerificationCat));
+  
+  cl::opt<std::string>
+  HelperFunctionRestrictionRuleFile("helper-function-restriction-rules",
+        cl::init(""),
+        cl::desc("File containing helper function restriction information"),
+        cl::cat(FunctionalVerificationCat));
+
 }
 
 namespace klee {
@@ -360,6 +374,7 @@ private:
   std::set<std::string> m_writeSetMap; // write set map
   std::set<std::string> m_mapCorrelation; // Correlations between maps
   std::set<std::string> m_readWriteOverlap;
+  std::set<std::string> m_helperFunctions; // set of helper function accessed
 
   // used for writing .ktest files
   int m_argc;
@@ -383,6 +398,7 @@ public:
   std::set<std::string> getWriteSetMap() { return m_writeSetMap; }
   std::set<std::string> getCorrelatedMaps() { return m_mapCorrelation; }
   std::set<std::string> getReadWriteOverlap() { return m_readWriteOverlap; }
+  std::set<std::string> getHelperFunctionList() { return m_helperFunctions; }
   void incPathsCompleted() { ++m_pathsCompleted; }
   void incPathsExplored(std::uint32_t num = 1) {
     m_pathsExplored += num; }
@@ -398,7 +414,9 @@ public:
     m_mapCorrelation.merge(newInfo); }
   void addToReadWriteOverlap(std::set<std::string> newSet) {
     m_readWriteOverlap.merge(newSet); }
-
+  void addToAccessedHelperFunctionSet(std::set<std::string> newSet) {
+    m_helperFunctions.merge(newSet);
+  }
   void setInterpreter(Interpreter *i);
 
   void processTestCase(const ExecutionState  &state,
@@ -1484,6 +1502,7 @@ int main(int argc, char **argv, char **envp) {
   Interpreter::InterpreterOptions IOpts;
   IOpts.MakeConcreteSymbolic = MakeConcreteSymbolic;
   IOpts.Verification = Verification;
+  IOpts.restrictBpfHelpers = RestrictHelperFunctions;
   KleeHandler *handler = new KleeHandler(pArgc, pArgv);
   Interpreter *interpreter =
     theInterpreter = Interpreter::create(ctx, IOpts, handler);
@@ -1774,6 +1793,24 @@ int main(int argc, char **argv, char **envp) {
       }
       readWriteInfo << "\n} \n";
       handler->getReadWriteOverlapStream() << readWriteInfo.str();
+    }
+  }
+
+  // helper function listing
+  if(RestrictHelperFunctions)
+  {
+    std::cout << "writing to file ------------- " << std::endl;
+    // std::string home = std::getenv("HOME");
+    std::ofstream out_file;
+    out_file.open("/home/jainil/Draco/DRACO-verifier/temp.txt", std::ios::app);
+    if (!out_file.is_open()) {
+      std::cerr << "Error: Could not open output file" << std::endl;
+    } else {
+      for(auto &i : handler->getHelperFunctionList()) {
+        std::cout << i << std::endl;
+        out_file << i << std::endl;
+      }
+      out_file.close();
     }
   }
 
